@@ -2,7 +2,7 @@
 
 ## 1. High latency P95
 - Severity: P2
-- Trigger: `latency_p95_ms > 5000 for 30m`
+- Trigger: `latency_p95_ms > 2500 for 30m` (lab threshold; production target 5000ms)
 - Impact: tail latency breaches SLO
 - First checks:
   1. Open top slow traces in the last 1h

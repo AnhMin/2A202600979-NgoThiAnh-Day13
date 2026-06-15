@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Day 13 Observability Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b98a8;
+      --accent: #3b82f6;
+      --slo: #f59e0b;
+      --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 20px 24px;
+      border-bottom: 1px solid #243044;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: 1.25rem; }
+    .meta { color: var(--muted); font-size: 0.875rem; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      padding: 16px 24px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid #243044;
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .stat label { display: block; color: var(--muted); font-size: 0.75rem; margin-bottom: 4px; }
+    .stat strong { font-size: 1.1rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 16px;
+      padding: 0 24px 24px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #243044;
+      border-radius: 12px;
+      padding: 16px;
+      min-height: 280px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    .panel small { color: var(--muted); }
+    canvas { max-height: 220px; }
+    .legend-slo { color: var(--slo); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Day 13 Observability Dashboard</h1>
+      <div class="meta">Layer-2 · window: 1 hour · auto refresh every 20s</div>
+    </div>
+    <div class="meta" id="status">Loading...</div>
+  </header>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="grid">
+    <article class="panel">
+      <h2>1. Latency P50 / P95 / P99 <small>(ms)</small></h2>
+      <canvas id="latencyChart"></canvas>
+    </article>
+    <article class="panel">
+      <h2>2. Traffic <small>(requests / minute)</small></h2>
+      <canvas id="trafficChart"></canvas>
+    </article>
+    <article class="panel">
+      <h2>3. Error Rate <small>(% per minute)</small></h2>
+      <canvas id="errorChart"></canvas>
+    </article>
+    <article class="panel">
+      <h2>4. Cost Over Time <small>(USD cumulative)</small></h2>
+      <canvas id="costChart"></canvas>
+    </article>
+    <article class="panel">
+      <h2>5. Tokens In / Out <small>(per minute)</small></h2>
+      <canvas id="tokensChart"></canvas>
+    </article>
+    <article class="panel">
+      <h2>6. Quality Score <small>(heuristic avg)</small></h2>
+      <canvas id="qualityChart"></canvas>
+    </article>
+  </section>
+
+  <script>
+    const charts = {};
+    const sloLine = (value, label) => ({
+      y: value,
+      borderColor: "#f59e0b",
+      borderDash: [6, 4],
+      borderWidth: 2,
+      label: { display: true, content: label, position: "start" },
+    });
+
+    function makeChart(id, config) {
+      if (charts[id]) {
+        charts[id].data = config.data;
+        charts[id].options = config.options;
+        charts[id].update();
+        return charts[id];
+      }
+      charts[id] = new Chart(document.getElementById(id), config);
+      return charts[id];
+    }
+
+    function renderStats(snapshot, slo) {
+      const items = [
+        ["Traffic", snapshot.traffic, "requests"],
+        ["Latency P95", snapshot.latency_p95, "ms"],
+        ["Error Rate", snapshot.error_rate_pct, "%"],
+        ["Total Cost", snapshot.total_cost_usd, "USD"],
+        ["Quality Avg", snapshot.quality_avg, ""],
+      ];
+      document.getElementById("stats").innerHTML = items.map(([label, value, unit]) =>
+        `<div class="stat"><label>${label}</label><strong>${value}${unit ? " " + unit : ""}</strong></div>`
+      ).join("") + `<div class="stat"><label>SLO P95</label><strong class="legend-slo">&lt; ${slo.latency_p95_ms} ms</strong></div>`;
+    }
+
+    function renderCharts(payload) {
+      const { series, slo, snapshot } = payload;
+      const labels = series.labels.length ? series.labels : ["no data"];
+
+      renderStats(snapshot, slo);
+
+      makeChart("latencyChart", {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "P50", data: series.latency_p50, borderColor: "#60a5fa", tension: 0.25 },
+            { label: "P95", data: series.latency_p95, borderColor: "#f97316", tension: 0.25 },
+            { label: "P99", data: series.latency_p99, borderColor: "#ef4444", tension: 0.25 },
+            {
+              label: `SLO P95 (${slo.latency_p95_ms} ms)`,
+              data: labels.map(() => slo.latency_p95_ms),
+              borderColor: "#f59e0b",
+              borderDash: [6, 4],
+              pointRadius: 0,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            annotation: undefined,
+            legend: { labels: { color: "#e7ecf3" } },
+          },
+          scales: {
+            y: {
+              title: { display: true, text: "ms", color: "#8b98a8" },
+              ticks: { color: "#8b98a8" },
+              grid: { color: "#243044" },
+            },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      makeChart("trafficChart", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{ label: "Requests", data: series.traffic, backgroundColor: "#3b82f6" }],
+        },
+        options: {
+          scales: {
+            y: { title: { display: true, text: "req/min", color: "#8b98a8" }, ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      makeChart("errorChart", {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "Error rate %", data: series.error_rate_pct, borderColor: "#ef4444", tension: 0.25 },
+            {
+              label: `SLO (${slo.error_rate_pct}%)`,
+              data: labels.map(() => slo.error_rate_pct),
+              borderColor: "#f59e0b",
+              borderDash: [6, 4],
+              pointRadius: 0,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: {
+              title: { display: true, text: "%", color: "#8b98a8" },
+              ticks: { color: "#8b98a8" },
+              grid: { color: "#243044" },
+              suggestedMax: Math.max(slo.error_rate_pct * 2, 5),
+            },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      makeChart("costChart", {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{ label: "Cumulative cost", data: series.cost_usd_cumulative, borderColor: "#a78bfa", tension: 0.25, fill: false }],
+        },
+        options: {
+          scales: {
+            y: { title: { display: true, text: "USD", color: "#8b98a8" }, ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      makeChart("tokensChart", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            { label: "Tokens in", data: series.tokens_in, backgroundColor: "#22c55e" },
+            { label: "Tokens out", data: series.tokens_out, backgroundColor: "#06b6d4" },
+          ],
+        },
+        options: {
+          scales: {
+            y: { title: { display: true, text: "tokens", color: "#8b98a8" }, ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      makeChart("qualityChart", {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "Quality avg", data: series.quality_avg, borderColor: "#22c55e", tension: 0.25 },
+            {
+              label: `SLO (${slo.quality_score_avg})`,
+              data: labels.map(() => slo.quality_score_avg),
+              borderColor: "#f59e0b",
+              borderDash: [6, 4],
+              pointRadius: 0,
+            },
+          ],
+        },
+        options: {
+          scales: {
+            y: {
+              min: 0,
+              max: 1,
+              title: { display: true, text: "score", color: "#8b98a8" },
+              ticks: { color: "#8b98a8" },
+              grid: { color: "#243044" },
+            },
+            x: { ticks: { color: "#8b98a8" }, grid: { color: "#243044" } },
+          },
+        },
+      });
+
+      document.getElementById("status").textContent =
+        `Updated ${new Date().toLocaleTimeString()} · breakdown: ${JSON.stringify(series.error_breakdown)}`;
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/metrics/dashboard");
+        const payload = await res.json();
+        renderCharts(payload);
+      } catch (err) {
+        document.getElementById("status").textContent = "Failed to load metrics: " + err.message;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 20000);
+  </script>
+</body>
+</html>
